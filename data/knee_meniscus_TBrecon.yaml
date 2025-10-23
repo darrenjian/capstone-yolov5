@@ -1,0 +1,30 @@
+# YOLOv5 Dataset Configuration for Knee Meniscus Detection
+# TBrecon-01-02-00011 dataset
+
+# Dataset paths (relative to this file)
+path: /Users/darrenjian/Downloads/For_capstone_students/yolov5/data/dicoms
+train: TBrecon-01-02-00011  # 196 DICOM images (81 with annotations)
+val: TBrecon-01-02-00011    # Using same for validation (TODO: split or add more volumes)
+test: TBrecon-01-02-00011   # Using same for test (TODO: add separate test set)
+
+# Classes (6 meniscus regions)
+names:
+  0: LatAntHorn    # Lateral Anterior Horn - 38 annotations
+  1: LatMenBody    # Lateral Meniscus Body - 11 annotations
+  2: LatPosHorn    # Lateral Posterior Horn - 0 annotations in this volume
+  3: MedAntHorn    # Medial Anterior Horn - 0 annotations in this volume
+  4: MedMenBody    # Medial Meniscus Body - 5 annotations
+  5: MedPosHorn    # Medial Posterior Horn - 27 annotations
+
+# Dataset statistics for TBrecon-01-02-00011:
+# - Total DICOM slices: 196
+# - Slices with annotations: 81
+# - Slices without annotations: 115 (will be used as negative samples)
+# - Total bounding boxes: 81
+# - Image size: 512x512 pixels
+# - Modality: MRI (Sagittal PD with Fat Saturation)
+
+# Notes:
+# - Labels are in TBrecon-01-02-00011_labels/ directory
+# - Each IM##.dcm has corresponding IM##.txt label file (if annotations exist)
+# - Slices without labels are treated as negative samples (no meniscus tears)
