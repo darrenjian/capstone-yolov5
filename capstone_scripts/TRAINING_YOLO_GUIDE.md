@@ -49,8 +49,8 @@ This script processes **all volumes** in your CSV files and creates a proper tra
 
 ```bash
 python batch_convert_annotations.py \
-  --dicom_root yolov5/data/dicoms \
-  --csv_dir yolov5/data/dicoms \
+  --dicom_root capstone-yolov5/data/dicoms \
+  --csv_dir capstone-yolov5/data/dicoms \
   --output yolo_dataset \
   --train_ratio 0.7 \
   --val_ratio 0.15 \
@@ -178,7 +178,7 @@ echo "Val labels: $(ls yolo_dataset/labels/val/*.txt | wc -l)"
 cd yolov5/
 
 python train.py \
-  --data ../yolo_dataset/dataset.yaml \
+  --data capstone-yolov5/yolo_dataset/dataset.yaml \
   --img 512 \
   --batch 8 \
   --epochs 100 \
@@ -191,7 +191,7 @@ python train.py \
 
 ```bash
 python train.py \
-  --data ../yolo_dataset/dataset.yaml \
+  --data capstone-yolov5/yolo_dataset/dataset.yaml \
   --img 512 \
   --batch 4 \
   --epochs 300 \
