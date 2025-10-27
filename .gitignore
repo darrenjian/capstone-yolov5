@@ -260,3 +260,5 @@ fabric.properties
 
 # ignore config.py file
 configs.py
+
+yolo_dataset/
