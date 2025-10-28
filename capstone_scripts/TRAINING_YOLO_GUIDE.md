@@ -21,156 +21,78 @@ pip install -r requirements.txt  # Includes pydicom>=2.3.0 for DICOM loading
 
 ---
 
-## Step 1: Organize Your Data
+## Configuration
 
-Your data should be structured like this:
+All HPC paths are stored in `config/hpc_paths.yaml`. This file contains:
+- Meniscus tear data paths (positive samples)
+- Normal/no-tear data paths (negative samples)
 
-```
-project/
-├── dicoms/
-│   ├── TBrecon-01-02-00011/
-│   │   ├── IM1.dcm
-│   │   ├── IM2.dcm
-│   │   └── ... (196 files)
-│   ├── TBrecon-01-02-00012/
-│   │   └── ... (more volumes)
-│   ├── TBRecon_anomaly_meniscus_MDai_df.csv      # Annotations
-│   └── TBRecon_ID_key_meniscus.csv               # UID mapping
-│
-├── batch_convert_annotations.py                   # Batch conversion script
-└── convert_dicom_to_png.py                        # DICOM→PNG converter
-```
+## Usage Examples
 
----
-
-## Step 2: Batch Convert All Annotations
-
-This script processes **all volumes** in your CSV files and creates a proper train/val/test split:
+### Process Meniscus Tear Data (Positive Samples)
 
 ```bash
-python batch_convert_annotations.py \
-  --dicom_root capstone-yolov5/data/dicoms \
-  --csv_dir capstone-yolov5/data/dicoms \
-  --output yolo_dataset \
-  --train_ratio 0.7 \
-  --val_ratio 0.15 \
-  --test_ratio 0.15 \
-  --seed 42
+python capstone_scripts/batch_convert_annotations.py \
+    --use_hpc \
+    --data_source meniscus_tear \
+    --output yolo_dataset_tears \
+    --train_ratio 0.7 \
+    --val_ratio 0.15 \
+    --test_ratio 0.15 \
+    --seed 42
 ```
 
-**Output structure:**
-```
-yolo_dataset/
-├── images/
-│   ├── train/
-│   │   ├── IM1.dcm
-│   │   ├── IM2.dcm
-│   │   └── ... (DICOM files from train volumes)
-│   ├── val/
-│   └── test/
-├── labels/
-│   ├── train/
-│   │   ├── IM1.txt
-│   │   ├── IM2.txt
-│   │   └── ... (YOLO format labels)
-│   ├── val/
-│   └── test/
-├── dataset.yaml                  # YOLOv5 config
-└── conversion_report.json        # Detailed statistics
-```
-
-**What this does:**
-- ✅ Processes all volumes in CSV files
-- ✅ Maps anonymized UIDs to DICOM filenames
-- ✅ Converts bounding boxes to YOLO format
-- ✅ Splits volumes into train/val/test (70/15/15%)
-- ✅ Creates empty labels for unannotated slices
-- ✅ Generates dataset.yaml and detailed report
-
----
-
-## Step 3: Prepare Images for Training
-
-**Option A: Use DICOM files directly** (Recommended)
-
-YOLOv5 now supports native DICOM loading - no conversion needed! After running batch conversion, your dataset is ready:
-
-```
-yolo_dataset/
-├── images/
-│   ├── train/
-│   │   ├── IM1.dcm    ← Use DICOM files directly
-│   │   ├── IM2.dcm
-│   │   └── ...
-│   ├── val/
-│   └── test/
-├── labels/
-│   └── ... (YOLO format)
-└── dataset.yaml
-```
-
-**Your dataset.yaml is already correct:**
-```yaml
-path: /path/to/yolo_dataset
-train: images/train    # Contains .dcm files
-val: images/val
-test: images/test
-```
-
-**Advantages:**
-- ✅ No conversion step required
-- ✅ 50% less disk space (no PNG duplicates)
-- ✅ Preserved DICOM metadata
-- ✅ Dynamic window/level adjustment
-
-**Technical details:** See `dataloader_modifications.md`
-
-**Option B: Convert DICOM to PNG** (Optional)
-
-If you prefer PNG files or need compatibility with other tools:
+### Process Normal Data (Negative Samples)
 
 ```bash
-python convert_dicom_to_png.py \
-  --input yolo_dataset/images \
-  --output yolo_dataset/images_png \
-  --window_center 600 \
-  --window_width 1200
+python capstone_scripts/batch_convert_annotations.py \
+    --use_hpc \
+    --data_source normal \
+    --output yolo_dataset_normal \
+    --train_ratio 0.7 \
+    --val_ratio 0.15 \
+    --test_ratio 0.15 \
+    --seed 42
 ```
 
-Then update dataset.yaml:
-```yaml
-path: /path/to/yolo_dataset
-train: images_png/train
-val: images_png/val
-test: images_png/test
-```
-
----
-
-## Step 4: Verify Dataset
+### Local Development (Without HPC Config)
 
 ```bash
-# Check dataset structure
-ls -la yolo_dataset/images/train/ | head
-ls -la yolo_dataset/labels/train/ | head
-
-# View conversion report
-cat yolo_dataset/conversion_report.json | python -m json.tool | head -50
-
-# Count files (for DICOM)
-echo "Train images: $(ls yolo_dataset/images/train/*.dcm | wc -l)"
-echo "Train labels: $(ls yolo_dataset/labels/train/*.txt | wc -l)"
-echo "Val images: $(ls yolo_dataset/images/val/*.dcm | wc -l)"
-echo "Val labels: $(ls yolo_dataset/labels/val/*.txt | wc -l)"
-
-# Or for PNG (if you converted)
-# echo "Train images: $(ls yolo_dataset/images_png/train/*.png | wc -l)"
-# echo "Train labels: $(ls yolo_dataset/labels/train/*.txt | wc -l)"
+python capstone_scripts/batch_convert_annotations.py \
+    --dicom_root data/dicoms \
+    --csv_dir data/dicoms \
+    --output yolo_dataset \
+    --train_ratio 0.6 \
+    --val_ratio 0.2 \
+    --test_ratio 0.2 \
+    --seed 42
 ```
+
+## HPC Data Structure
+
+### Meniscus Tear Data
+- **Annotations:**
+  - `/gpfs/data/lattanzilab/Ilias/NYU_UCSF_Collab/Annotations/meniscus_specific/TBRecon_anomaly_meniscus_MDai_df.csv`
+  - `/gpfs/data/lattanzilab/Ilias/NYU_UCSF_Collab/Annotations/meniscus_specific/TBRecon_ID_key_meniscus.csv`
+- **DICOMs:** `/gpfs/data/lattanzilab/Ilias/NYU_UCSF_Collab/Dicom_Meniscal_Tear/TBrecon-XX-XX-XXXXX/`
+
+### Normal Data (No Tear)
+- **Annotations:**
+  - `/gpfs/data/lattanzilab/Ilias/NYU_UCSF_Collab/Annotations/normal_no_anomalies/TBRecon_anomaly_normal_MDai_df.csv`
+  - `/gpfs/data/lattanzilab/Ilias/NYU_UCSF_Collab/Annotations/normal_no_anomalies/TBRecon_ID_key_normal.csv`
+- **DICOMs:** `/gpfs/data/lattanzilab/Ilias/NYU_UCSF_Collab/Dicom_Normal/TBrecon-XX-XX-XXXXX/`
+
+## Output
+
+The script creates a YOLO-format dataset with:
+- Binary classification: 0 (no tear) vs 1 (tear)
+- Train/val/test splits at volume level
+- Files renamed with volume ID suffix (e.g., `IM1-01-02-00011.dcm`)
+- YAML config file for YOLOv5 training
 
 ---
 
-## Step 5: Train YOLOv5
+## Train YOLOv5
 
 ### Basic Training
 

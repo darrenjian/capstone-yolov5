@@ -9,6 +9,7 @@ import math
 import os
 import random
 import shutil
+import sys
 import time
 from itertools import repeat
 from multiprocessing.pool import Pool, ThreadPool
@@ -25,6 +26,20 @@ import yaml
 from PIL import ExifTags, Image, ImageOps
 from torch.utils.data import DataLoader, Dataset, dataloader, distributed
 from tqdm import tqdm
+
+# Import data paths configuration
+# Additional paths available in configs.py:
+#   DATA_DIR, MENISCUS_ANNOTATIONS_DIR, NORMAL_ANNOTATIONS_DIR, USE_HPC
+# Usage example:
+#   from configs import DATA_DIR, DICOM_NORMAL, DICOM_MENISCAL
+#   train_path = DICOM_MENISCAL / "train"
+sys.path.insert(0, str(Path(__file__).parent.parent))
+try:
+    from configs import DICOM_NORMAL, DICOM_MENISCAL
+except ImportError:
+    # Configs not available, paths must be specified manually
+    DICOM_NORMAL = None
+    DICOM_MENISCAL = None
 
 from utils.augmentations import (
     Albumentations,
@@ -189,6 +204,29 @@ def verify_dicom_image(path):
         return None
     except Exception:
         return None
+
+
+def get_dicom_data_path(source='meniscus_tear'):
+    """
+    Get DICOM data path from configs.
+
+    Args:
+        source: 'meniscus_tear' for tear data or 'normal' for non-tear data
+
+    Returns:
+        Path object to DICOM directory
+
+    Example:
+        >>> from utils.dataloaders import get_dicom_data_path
+        >>> train_path = get_dicom_data_path('meniscus_tear')
+        >>> # Use in dataset.yaml: train: /path/from/config/images/train
+    """
+    if source == 'meniscus_tear':
+        return DICOM_MENISCAL
+    elif source == 'normal':
+        return DICOM_NORMAL
+    else:
+        raise ValueError(f"Invalid source '{source}'. Choose 'meniscus_tear' or 'normal'")
 
 
 # Inherit from DistributedSampler and override iterator

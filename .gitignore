@@ -34,7 +34,7 @@ data/images/*
 !data/images/zidane.jpg
 !data/images/bus.jpg
 !data/*.sh
-!data/dicoms
+data/dicoms
 
 results*.csv
 
@@ -257,8 +257,5 @@ com_crashlytics_export_strings.xml
 crashlytics.properties
 crashlytics-build.properties
 fabric.properties
-
-# ignore config.py file
-configs.py
 
 yolo_dataset/

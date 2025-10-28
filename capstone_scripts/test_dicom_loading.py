@@ -18,7 +18,7 @@ def test_single_dicom_file():
     """Test loading a single DICOM file"""
 
     # Test file path
-    test_file = Path(__file__).parent.parent / 'data' / 'dicoms' / 'TBrecon-01-02-00011' / 'IM1.dcm'
+    test_file = Path(__file__).parent.parent / 'yolo_dataset' / 'images' / 'test' / 'IM1-01-02-00015.dcm'
 
     if not test_file.exists():
         print(f"Test file not found: {test_file}")
