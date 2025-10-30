@@ -1,7 +1,0 @@
-train: /gpfs/data/lattanzilab/Ilias/NYU_FAST_MRI/kneeYOLO/train
-val: /gpfs/data/lattanzilab/Ilias/NYU_FAST_MRI/kneeYOLO/recon_E2E_VarNet_6x_Perceptual_YOLOv5_6_feature_2p5x3_1p2x5_0p7x7_0p6x13_0p5x17_0p5x20_0p5x23_plus_SSIM_cartilage_defect_fine_tuned
-test: /gpfs/data/lattanzilab/Ilias/NYU_FAST_MRI/kneeYOLO/test
-
-nc: 1
-
-names: ['Cartilage_Defects']

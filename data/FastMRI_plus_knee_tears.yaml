@@ -1,8 +1,0 @@
-train: /gpfs/data/lattanzilab/Ilias/NYU_FAST_MRI/kneeYOLO/train 
-val: /gpfs/data/lattanzilab/Ilias/NYU_FAST_MRI/kneeYOLO/val
-test: /gpfs/data/lattanzilab/Ilias/NYU_FAST_MRI/kneeYOLO/test
-
-nc: 1
-
-names: ['Meniscal_Tear']
-
