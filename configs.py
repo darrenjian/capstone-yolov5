@@ -5,7 +5,7 @@ Set USE_HPC=True when running on HPC cluster, False for local development
 from pathlib import Path
 
 # Toggle between HPC and local paths
-USE_HPC = False
+USE_HPC = True
 
 if USE_HPC:
     # HPC paths
