@@ -260,3 +260,6 @@ fabric.properties
 
 yolo_dataset/
 data/dicoms
+
+slurm_train_multigpu_12567754.out
+slurm_validate_11282759.out
