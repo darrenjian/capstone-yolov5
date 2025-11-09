@@ -90,7 +90,7 @@ def convert_bbox_to_yolo(bbox_dict, img_width, img_height):
     return x_center_norm, y_center_norm, width_norm, height_norm
 
 
-def load_annotations_and_mapping(csv_dir):
+def load_annotations_and_mapping(csv_dir, data_source):
     """
     Load annotation and mapping CSV files
 
@@ -103,13 +103,19 @@ def load_annotations_and_mapping(csv_dir):
     csv_dir = Path(csv_dir)
 
     # Load annotation file
-    annot_file = csv_dir / 'TBRecon_anomaly_meniscus_MDai_df.csv'
+    if data_source == 'meniscus_tear':
+        annot_file = csv_dir / 'TBRecon_anomaly_meniscus_MDai_df.csv'
+    else: 
+        annot_file = csv_dir / 'TBRecon_anomaly_normal_MDai_df.csv'
     if not annot_file.exists():
         raise FileNotFoundError(f"Annotation file not found: {annot_file}")
     df_annot = pd.read_csv(annot_file)
 
     # Load mapping file
-    map_file = csv_dir / 'TBRecon_ID_key_meniscus.csv'
+    if data_source == 'meniscus_tear':
+        map_file = csv_dir / 'TBRecon_ID_key_meniscus.csv'
+    else:
+        map_file = csv_dir / 'TBRecon_ID_key_normal.csv'
     if not map_file.exists():
         raise FileNotFoundError(f"Mapping file not found: {map_file}")
     df_map = pd.read_csv(map_file)
@@ -418,27 +424,54 @@ def format_class_distribution(class_dist):
     return "#   No annotations"
 
 
-def generate_summary_report(all_stats, splits, output_root):
+def generate_summary_report(all_stats, splits, output_root, append=False):
     """Generate detailed summary report"""
 
-    # Calculate overall statistics
-    total_volumes = len(all_stats)
-    successful_volumes = sum(1 for s in all_stats.values() if s['status'] == 'success')
-    total_images = sum(s.get('total_slices', 0) for s in all_stats.values())
-    total_annotations = sum(s.get('total_annotations', 0) for s in all_stats.values())
+    # If appending, load existing report and merge
+    existing_stats = {}
+    existing_splits = {'train': [], 'val': [], 'test': []}
+    report_path = output_root / 'conversion_report.json'
+
+    if append and report_path.exists():
+        print("\n" + "="*60)
+        print("LOADING EXISTING DATASET")
+        print("="*60)
+        try:
+            with open(report_path, 'r') as f:
+                existing_report = json.load(f)
+                existing_stats = existing_report.get('volumes', {})
+                existing_splits = existing_report.get('splits', {'train': [], 'val': [], 'test': []})
+                print(f"✓ Loaded existing report with {len(existing_stats)} volumes")
+        except Exception as e:
+            print(f"Warning: Could not load existing report: {e}")
+            print("Proceeding without merging...")
+
+    # Merge stats and splits
+    merged_stats = {**existing_stats, **all_stats}
+    merged_splits = {
+        'train': existing_splits['train'] + splits['train'],
+        'val': existing_splits['val'] + splits['val'],
+        'test': existing_splits['test'] + splits['test']
+    }
+
+    # Calculate overall statistics from merged data
+    total_volumes = len(merged_stats)
+    successful_volumes = sum(1 for s in merged_stats.values() if s['status'] == 'success')
+    total_images = sum(s.get('total_slices', 0) for s in merged_stats.values())
+    total_annotations = sum(s.get('total_annotations', 0) for s in merged_stats.values())
 
     # Aggregate class distribution
     overall_class_dist = defaultdict(int)
-    for stats in all_stats.values():
+    for stats in merged_stats.values():
         for class_name, count in stats.get('class_distribution', {}).items():
             overall_class_dist[class_name] += count
 
     stats_summary = {
         'total_volumes': total_volumes,
         'successful_volumes': successful_volumes,
-        'train_volumes': len(splits['train']),
-        'val_volumes': len(splits['val']),
-        'test_volumes': len(splits['test']),
+        'train_volumes': len(merged_splits['train']),
+        'val_volumes': len(merged_splits['val']),
+        'test_volumes': len(merged_splits['test']),
         'total_images': total_images,
         'total_annotations': total_annotations,
         'class_distribution': dict(overall_class_dist)
@@ -446,15 +479,21 @@ def generate_summary_report(all_stats, splits, output_root):
 
     # Print summary
     print("\n" + "="*60)
-    print("CONVERSION SUMMARY")
+    if append:
+        print("MERGED DATASET SUMMARY")
+    else:
+        print("CONVERSION SUMMARY")
     print("="*60)
-    print(f"Total volumes processed: {total_volumes}")
+    print(f"Total volumes: {total_volumes}")
+    if append:
+        print(f"  Previously existing: {len(existing_stats)}")
+        print(f"  Newly added: {len(all_stats)}")
     print(f"Successful: {successful_volumes}")
     print(f"Failed: {total_volumes - successful_volumes}")
     print(f"\nDataset split:")
-    print(f"  Train: {len(splits['train'])} volumes")
-    print(f"  Val: {len(splits['val'])} volumes")
-    print(f"  Test: {len(splits['test'])} volumes")
+    print(f"  Train: {len(merged_splits['train'])} volumes")
+    print(f"  Val: {len(merged_splits['val'])} volumes")
+    print(f"  Test: {len(merged_splits['test'])} volumes")
     print(f"\nTotal images: {total_images}")
     print(f"Total annotations: {total_annotations}")
     print(f"\nClass distribution (binary):")
@@ -462,15 +501,14 @@ def generate_summary_report(all_stats, splits, output_root):
     print(f"  1: tear          - {total_annotations:4d} annotations")
 
     # Save detailed report
-    report_path = output_root / 'conversion_report.json'
     report = {
         'summary': stats_summary,
         'splits': {
-            'train': splits['train'],
-            'val': splits['val'],
-            'test': splits['test']
+            'train': merged_splits['train'],
+            'val': merged_splits['val'],
+            'test': merged_splits['test']
         },
-        'volumes': all_stats
+        'volumes': merged_stats
     }
 
     with open(report_path, 'w') as f:
@@ -527,6 +565,11 @@ def main():
         default=42,
         help='Random seed for train/val/test split (default: 42)'
     )
+    parser.add_argument(
+        '--append',
+        action='store_true',
+        help='Append to existing dataset instead of creating new one. Merges stats and preserves existing files.'
+    )
 
     args = parser.parse_args()
 
@@ -550,7 +593,7 @@ def main():
 
     # Load CSV files
     print("\nLoading annotation and mapping files...")
-    df_annot, df_map = load_annotations_and_mapping(csv_dir)
+    df_annot, df_map = load_annotations_and_mapping(csv_dir, data_source=args.data_source)
     print(f"✓ Loaded {len(df_annot)} annotations")
     print(f"✓ Loaded {len(df_map)} UID mappings")
 
@@ -592,7 +635,7 @@ def main():
     )
 
     # Generate summary report
-    stats_summary = generate_summary_report(all_stats, splits, Path(args.output))
+    stats_summary = generate_summary_report(all_stats, splits, Path(args.output), append=args.append)
 
     # Create dataset YAML
     yaml_path = create_dataset_yaml(Path(args.output), stats_summary)
