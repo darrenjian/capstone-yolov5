@@ -39,9 +39,9 @@ python -m torch.distributed.run \
     --batch 32 \
     --epochs 100 \
     --data /gpfs/home/pb3060/capstone-yolov5/yolo_dataset/dataset.yaml \
-    --weights yolov5n.pt \
+    --weights yolov5s.pt \
     --device 0,1,2,3 \
-    --name meniscus_yolov5n_multigpu_100ep \
+    --name meniscus_yolov5s_multigpu_100ep_new_val_110625 \
     --hyp ./data/hyps/hyp.scratch-low.yaml \
     --patience 50 \
     --save-period 10
