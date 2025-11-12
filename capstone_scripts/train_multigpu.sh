@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # go to repo root
-cd /gpfs/home/pb3060/capstone-yolov5
+cd /gpfs/home/ic2664/capstone-yolov5
 
 # load python module used interactively
 module load python/gpu/3.10.6-cuda12.9
@@ -38,7 +38,7 @@ python -m torch.distributed.run \
     --img 640 \
     --batch 32 \
     --epochs 100 \
-    --data /gpfs/home/pb3060/capstone-yolov5/yolo_dataset/dataset.yaml \
+    --data /gpfs/home/ic2664/capstone-yolov5/yolo_dataset/dataset.yaml \
     --weights yolov5s.pt \
     --device 0,1,2,3 \
     --name meniscus_yolov5s_multigpu_100ep_new_val_110625 \
