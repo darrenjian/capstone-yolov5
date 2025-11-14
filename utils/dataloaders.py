@@ -274,6 +274,7 @@ def create_dataloader(
     prefix="",
     shuffle=False,
     seed=0,
+    slice_range=None,
 ):
     if rect and shuffle:
         LOGGER.warning("WARNING ⚠️ --rect is incompatible with DataLoader shuffle, setting shuffle=False")
@@ -293,6 +294,7 @@ def create_dataloader(
             image_weights=image_weights,
             prefix=prefix,
             rank=rank,
+            slice_range=slice_range,  # filter slices by index range
         )
 
     batch_size = min(batch_size, len(dataset))
@@ -630,6 +632,34 @@ def img2label_paths(img_paths):
     return [sb.join(x.rsplit(sa, 1)).rsplit(".", 1)[0] + ".txt" for x in img_paths]
 
 
+def extract_slice_index(filename):
+    """
+    Extract slice index from filename.
+
+    Expected format: IM<slice_num>-<volume_id>.dcm or similar
+    Example: IM5-01-02-00011.dcm -> 5
+
+    Args:
+        filename: Image filename (e.g., "IM5-01-02-00011.dcm")
+
+    Returns:
+        slice_index (int) or None if parsing fails
+    """
+    import re
+
+    # Get just the filename without directory
+    basename = os.path.basename(filename)
+
+    # Pattern: IM followed by digits, then hyphen
+    pattern = r'IM(\d+)-'
+    match = re.match(pattern, basename)
+
+    if match:
+        return int(match.group(1))
+
+    return None
+
+
 class LoadImagesAndLabels(Dataset):
     # YOLOv5 train_loader/val_loader, loads images and labels for training and validation
     cache_version = 0.6  # dataset labels *.cache version
@@ -652,6 +682,7 @@ class LoadImagesAndLabels(Dataset):
         prefix="",
         rank=-1,
         seed=0,
+        slice_range=None,
     ):
         self.img_size = img_size
         self.augment = augment
@@ -723,6 +754,50 @@ class LoadImagesAndLabels(Dataset):
             self.labels = [self.labels[i] for i in include]
             self.segments = [self.segments[i] for i in include]
             self.shapes = self.shapes[include]  # wh
+
+        # Filter images by slice range (for volumetric medical imaging)
+        if slice_range is not None:
+            # Load slice range from file or dict
+            if isinstance(slice_range, str):
+                import json
+                with open(slice_range, 'r') as f:
+                    slice_range_data = json.load(f)
+                min_slice = slice_range_data['global_statistics']['min_slice_with_tear']
+                max_slice = slice_range_data['global_statistics']['max_slice_with_tear']
+            elif isinstance(slice_range, dict):
+                min_slice = slice_range.get('min_slice')
+                max_slice = slice_range.get('max_slice')
+            elif isinstance(slice_range, (tuple, list)) and len(slice_range) == 2:
+                min_slice, max_slice = slice_range
+            else:
+                raise ValueError(f"Invalid slice_range format: {slice_range}. Expected path to JSON, dict, or (min, max) tuple")
+
+            if min_slice is not None and max_slice is not None:
+                # Extract slice indices and filter
+                n_before = len(self.im_files)
+                include_indices = []
+
+                for i, im_file in enumerate(self.im_files):
+                    slice_idx = extract_slice_index(im_file)
+                    if slice_idx is not None and min_slice <= slice_idx <= max_slice:
+                        include_indices.append(i)
+                    elif slice_idx is None:
+                        # Keep files that don't match pattern (may not be volumetric data)
+                        include_indices.append(i)
+
+                # Apply filter
+                self.im_files = [self.im_files[i] for i in include_indices]
+                self.label_files = [self.label_files[i] for i in include_indices]
+                self.labels = [self.labels[i] for i in include_indices]
+                self.segments = [self.segments[i] for i in include_indices]
+                self.shapes = self.shapes[include_indices]
+
+                n_after = len(self.im_files)
+                n_filtered = n_before - n_after
+                LOGGER.info(
+                    f"{prefix}Slice range filter: keeping slices [{min_slice}, {max_slice}], "
+                    f"filtered {n_filtered}/{n_before} images ({100*n_filtered/n_before:.1f}%)"
+                )
 
         # Create indices
         n = len(self.shapes)  # number of images

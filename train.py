@@ -283,6 +283,22 @@ def train(hyp, opt, device, callbacks):
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
         LOGGER.info("Using SyncBatchNorm()")
 
+    # Parse slice_range parameter
+    slice_range = None
+    if hasattr(opt, 'slice_range') and opt.slice_range is not None:
+        if ',' in str(opt.slice_range):
+            # Parse "min,max" format
+            try:
+                min_s, max_s = map(int, opt.slice_range.split(','))
+                slice_range = (min_s, max_s)
+                LOGGER.info(f"Using slice range filter: [{min_s}, {max_s}]")
+            except ValueError:
+                LOGGER.warning(f"Invalid slice_range format: {opt.slice_range}. Expected 'min,max' or path to JSON")
+        else:
+            # Assume it's a path to JSON file
+            slice_range = opt.slice_range
+            LOGGER.info(f"Using slice range filter from: {slice_range}")
+
     # Trainloader
     train_loader, dataset = create_dataloader(
         train_path,
@@ -301,6 +317,7 @@ def train(hyp, opt, device, callbacks):
         prefix=colorstr("train: "),
         shuffle=True,
         seed=opt.seed,
+        slice_range=slice_range,
     )
     labels = np.concatenate(dataset.labels, 0)
     mlc = int(labels[:, 0].max())  # max label class
@@ -321,6 +338,7 @@ def train(hyp, opt, device, callbacks):
             workers=workers * 2,
             pad=0.5,
             prefix=colorstr("val: "),
+            slice_range=slice_range,
         )[0]
 
         if not resume:
@@ -614,6 +632,14 @@ def parse_opt(known=False):
     # NDJSON logging
     parser.add_argument("--ndjson-console", action="store_true", help="Log ndjson to console")
     parser.add_argument("--ndjson-file", action="store_true", help="Log ndjson to file")
+
+    # Medical imaging slice filtering
+    parser.add_argument(
+        "--slice-range",
+        type=str,
+        default=None,
+        help="Filter slices by index range. Accepts: JSON file path, 'min,max' string, or None to disable",
+    )
 
     return parser.parse_known_args()[0] if known else parser.parse_args()
 
