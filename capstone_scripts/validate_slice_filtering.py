@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import json
+import random
 import re
 import sys
 from pathlib import Path
@@ -143,7 +144,12 @@ def validate_filtering(dataset_root, slice_range_arg, split='train', img_size=64
         slice_indices = []
         out_of_range = []
 
-        for img_file in dataset_filtered.im_files[:100]:  # Sample first 100 files
+        # Randomly sample up to 100 files for validation (seeded for reproducibility)
+        random.seed(42)
+        sample_size = min(100, len(dataset_filtered.im_files))
+        sampled_files = random.sample(dataset_filtered.im_files, sample_size)
+
+        for img_file in sampled_files:
             slice_idx = extract_slice_index(img_file)
             if slice_idx is not None:
                 slice_indices.append(slice_idx)
@@ -154,7 +160,7 @@ def validate_filtering(dataset_root, slice_range_arg, split='train', img_size=64
             actual_min = min(slice_indices)
             actual_max = max(slice_indices)
 
-            print(f"\nSlice Range Validation (sampled {len(slice_indices)} images):")
+            print(f"\nSlice Range Validation (randomly sampled {len(slice_indices)} images):")
             print(f"  Expected range: [{min_slice}, {max_slice}]")
             print(f"  Actual range:   [{actual_min}, {actual_max}]")
 
@@ -168,7 +174,7 @@ def validate_filtering(dataset_root, slice_range_arg, split='train', img_size=64
                 validation_passed = True
 
             # Additional statistics
-            print(f"\nSlice Distribution (sampled):")
+            print(f"\nSlice Distribution (random sample):")
             print(f"  Mean: {np.mean(slice_indices):.1f}")
             print(f"  Median: {np.median(slice_indices):.1f}")
             print(f"  Std: {np.std(slice_indices):.1f}")
