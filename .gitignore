@@ -262,4 +262,4 @@ yolo_dataset/
 data/dicoms
 
 # Slurm output files
-slurm*.out
+*.out

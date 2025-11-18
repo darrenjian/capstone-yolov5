@@ -3,10 +3,10 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=40
-#SBATCH --time=1-00:00:00
+#SBATCH --time=04:00:00
 #SBATCH --mem=200G
 #SBATCH --gres=gpu:a100:4
-#SBATCH --output=slurm_train_multigpu_%j.out
+#SBATCH --output=n_benchmark_fixed_labels.out
 
 # fail on error
 set -euo pipefail
@@ -37,11 +37,11 @@ python -m torch.distributed.run \
     train.py \
     --img 640 \
     --batch 32 \
-    --epochs 100 \
+    --epochs 75 \
     --data /gpfs/home/pb3060/capstone-yolov5/yolo_dataset/dataset.yaml \
-    --weights yolov5s.pt \
+    --weights yolov5n.pt \
     --device 0,1,2,3 \
-    --name meniscus_yolov5s_multigpu_100ep_new_val_110625 \
-    --hyp ./data/hyps/hyp.scratch-low.yaml \
+    --name n_benchmark_meniscus_fixed_labels \
+    --hyp ./data/hyps/hyp.scratch-low-custom.yaml \
     --patience 50 \
     --save-period 10
