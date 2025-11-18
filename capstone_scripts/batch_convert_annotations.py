@@ -425,34 +425,28 @@ def format_class_distribution(class_dist):
 
 
 def generate_summary_report(all_stats, splits, output_root, append=False):
-    """Generate detailed summary report"""
+    """Generate detailed summary report
 
-    # If appending, load existing report and merge
-    existing_stats = {}
-    existing_splits = {'train': [], 'val': [], 'test': []}
+    Args:
+        all_stats: Stats for newly processed volumes only
+        splits: Full splits dict with all volumes (existing + new)
+        output_root: Output directory
+        append: Whether this is an append operation
+    """
     report_path = output_root / 'conversion_report.json'
 
+    # If appending, load existing stats and merge
+    existing_stats = {}
     if append and report_path.exists():
-        print("\n" + "="*60)
-        print("LOADING EXISTING DATASET")
-        print("="*60)
         try:
             with open(report_path, 'r') as f:
                 existing_report = json.load(f)
                 existing_stats = existing_report.get('volumes', {})
-                existing_splits = existing_report.get('splits', {'train': [], 'val': [], 'test': []})
-                print(f"✓ Loaded existing report with {len(existing_stats)} volumes")
         except Exception as e:
-            print(f"Warning: Could not load existing report: {e}")
-            print("Proceeding without merging...")
+            print(f"Warning: Could not load existing stats: {e}")
 
-    # Merge stats and splits
+    # Merge stats (new stats override old if same volume ID)
     merged_stats = {**existing_stats, **all_stats}
-    merged_splits = {
-        'train': existing_splits['train'] + splits['train'],
-        'val': existing_splits['val'] + splits['val'],
-        'test': existing_splits['test'] + splits['test']
-    }
 
     # Calculate overall statistics from merged data
     total_volumes = len(merged_stats)
@@ -469,9 +463,9 @@ def generate_summary_report(all_stats, splits, output_root, append=False):
     stats_summary = {
         'total_volumes': total_volumes,
         'successful_volumes': successful_volumes,
-        'train_volumes': len(merged_splits['train']),
-        'val_volumes': len(merged_splits['val']),
-        'test_volumes': len(merged_splits['test']),
+        'train_volumes': len(splits['train']),
+        'val_volumes': len(splits['val']),
+        'test_volumes': len(splits['test']),
         'total_images': total_images,
         'total_annotations': total_annotations,
         'class_distribution': dict(overall_class_dist)
@@ -491,9 +485,9 @@ def generate_summary_report(all_stats, splits, output_root, append=False):
     print(f"Successful: {successful_volumes}")
     print(f"Failed: {total_volumes - successful_volumes}")
     print(f"\nDataset split:")
-    print(f"  Train: {len(merged_splits['train'])} volumes")
-    print(f"  Val: {len(merged_splits['val'])} volumes")
-    print(f"  Test: {len(merged_splits['test'])} volumes")
+    print(f"  Train: {len(splits['train'])} volumes")
+    print(f"  Val: {len(splits['val'])} volumes")
+    print(f"  Test: {len(splits['test'])} volumes")
     print(f"\nTotal images: {total_images}")
     print(f"Total annotations: {total_annotations}")
     print(f"\nClass distribution (binary):")
@@ -504,9 +498,9 @@ def generate_summary_report(all_stats, splits, output_root, append=False):
     report = {
         'summary': stats_summary,
         'splits': {
-            'train': merged_splits['train'],
-            'val': merged_splits['val'],
-            'test': merged_splits['test']
+            'train': splits['train'],
+            'val': splits['val'],
+            'test': splits['test']
         },
         'volumes': merged_stats
     }
@@ -599,10 +593,48 @@ def main():
 
     # Get volume list
     volumes = get_volume_list(df_map)
-    print(f"\n✓ Found {len(volumes)} unique volumes")
+    print(f"\n✓ Found {len(volumes)} unique volumes to process")
 
-    # Split volumes
-    print(f"\nSplitting volumes (train:{args.train_ratio}, val:{args.val_ratio}, test:{args.test_ratio})...")
+    # Load existing data if appending
+    output_path = Path(args.output)
+    existing_splits = {'train': [], 'val': [], 'test': []}
+    existing_volumes = set()
+
+    if args.append:
+        report_path = output_path / 'conversion_report.json'
+        if report_path.exists():
+            print("\n" + "="*60)
+            print("LOADING EXISTING DATASET FOR APPEND")
+            print("="*60)
+            try:
+                with open(report_path, 'r') as f:
+                    existing_report = json.load(f)
+                    existing_splits = existing_report.get('splits', {'train': [], 'val': [], 'test': []})
+                    existing_volumes = set(existing_report.get('volumes', {}).keys())
+                    print(f"✓ Found existing dataset with {len(existing_volumes)} volumes")
+                    print(f"  - Train: {len(existing_splits['train'])} volumes")
+                    print(f"  - Val: {len(existing_splits['val'])} volumes")
+                    print(f"  - Test: {len(existing_splits['test'])} volumes")
+            except Exception as e:
+                print(f"Warning: Could not load existing report: {e}")
+                print("Proceeding without appending...")
+                args.append = False
+        else:
+            print(f"\nNote: --append specified but no existing dataset found at {report_path}")
+            print("Creating new dataset...")
+            args.append = False
+
+    # Filter out volumes that already exist (when appending)
+    if args.append:
+        new_volumes = [v for v in volumes if v not in existing_volumes]
+        if not new_volumes:
+            print("\n✓ All volumes already exist in dataset. Nothing to add.")
+            return
+        print(f"\n✓ {len(new_volumes)} new volumes to add (skipping {len(volumes) - len(new_volumes)} existing)")
+        volumes = new_volumes
+
+    # Split NEW volumes
+    print(f"\nSplitting NEW volumes (train:{args.train_ratio}, val:{args.val_ratio}, test:{args.test_ratio})...")
     train_vols, val_vols, test_vols = split_volumes(
         volumes,
         args.train_ratio,
@@ -611,21 +643,34 @@ def main():
         args.seed
     )
 
-    splits = {
+    print(f"✓ New Train: {len(train_vols)} volumes")
+    print(f"✓ New Val: {len(val_vols)} volumes")
+    print(f"✓ New Test: {len(test_vols)} volumes")
+
+    # Create splits dict with NEW volumes only for processing
+    splits_to_process = {
         'train': train_vols,
         'val': val_vols,
         'test': test_vols
     }
 
-    print(f"✓ Train: {len(train_vols)} volumes")
-    print(f"✓ Val: {len(val_vols)} volumes")
-    print(f"✓ Test: {len(test_vols)} volumes")
+    # Create full splits dict for reporting (merging existing + new)
+    full_splits = {
+        'train': existing_splits['train'] + train_vols,
+        'val': existing_splits['val'] + val_vols,
+        'test': existing_splits['test'] + test_vols
+    }
 
-    # Process all volumes
-    print(f"\nProcessing volumes and organizing dataset...")
+    if args.append:
+        print(f"\n✓ Total after append - Train: {len(full_splits['train'])} volumes")
+        print(f"✓ Total after append - Val: {len(full_splits['val'])} volumes")
+        print(f"✓ Total after append - Test: {len(full_splits['test'])} volumes")
+
+    # Process NEW volumes only
+    print(f"\nProcessing NEW volumes and appending to dataset...")
     all_stats = organize_yolo_dataset(
         dicom_root,
-        Path(args.output),
+        output_path,
         df_annot,
         df_map,
         train_vols,
@@ -634,8 +679,8 @@ def main():
         create_empty_labels=not args.no_empty_labels
     )
 
-    # Generate summary report
-    stats_summary = generate_summary_report(all_stats, splits, Path(args.output), append=args.append)
+    # Generate summary report with full splits
+    stats_summary = generate_summary_report(all_stats, full_splits, output_path, append=args.append)
 
     # Create dataset YAML
     yaml_path = create_dataset_yaml(Path(args.output), stats_summary)
