@@ -102,54 +102,6 @@ WORLD_SIZE = int(os.getenv("WORLD_SIZE", 1))
 GIT_INFO = check_git_info()
 
 
-def log_gpu_info(device, prefix=""):
-    """Log detailed GPU information including memory and utilization."""
-    if torch.cuda.is_available():
-        try:
-            # Basic memory info
-            allocated = torch.cuda.memory_allocated(device) / 1e9
-            reserved = torch.cuda.memory_reserved(device) / 1e9
-            max_allocated = torch.cuda.max_memory_allocated(device) / 1e9
-            
-            msg = f"{prefix}GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB, Peak: {max_allocated:.2f}GB"
-            
-            # Try to get utilization using nvidia-smi if available
-            try:
-                import subprocess
-                result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,utilization.memory,temperature.gpu', 
-                                       '--format=csv,noheader,nounits', f'--id={device.index if hasattr(device, "index") else 0}'],
-                                      capture_output=True, text=True, timeout=2)
-                if result.returncode == 0:
-                    gpu_util, mem_util, temp = result.stdout.strip().split(',')
-                    msg += f" | GPU Util: {gpu_util.strip()}%, Mem Util: {mem_util.strip()}%, Temp: {temp.strip()}°C"
-            except:
-                pass
-            
-            LOGGER.info(msg)
-        except Exception as e:
-            LOGGER.info(f"{prefix}Could not retrieve GPU info: {e}")
-
-
-def log_system_resources(prefix=""):
-    """Log system RAM and CPU utilization."""
-    try:
-        import psutil
-        # System RAM
-        ram = psutil.virtual_memory()
-        ram_used = ram.used / 1e9
-        ram_total = ram.total / 1e9
-        ram_percent = ram.percent
-        
-        # CPU utilization
-        cpu_percent = psutil.cpu_percent(interval=0.1)
-        
-        LOGGER.info(f"{prefix}System RAM: {ram_used:.2f}/{ram_total:.2f}GB ({ram_percent:.1f}%) | CPU: {cpu_percent:.1f}%")
-    except ImportError:
-        LOGGER.info(f"{prefix}psutil not available - install with 'pip install psutil' for system resource monitoring")
-    except Exception as e:
-        LOGGER.info(f"{prefix}Could not retrieve system resources: {e}")
-
-
 def train(hyp, opt, device, callbacks):
     """
     Train a YOLOv5 model on a custom dataset using specified hyperparameters, options, and device, managing datasets,
@@ -200,15 +152,6 @@ def train(hyp, opt, device, callbacks):
         opt.freeze,
     )
     callbacks.run("on_pretrain_routine_start")
-    
-    # Log start time and system resources
-    start_time = time.time()
-    LOGGER.info(f"\n{'='*80}\nTRAINING START: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{'='*80}")
-    if torch.cuda.is_available():
-        LOGGER.info(f"GPU Device: {torch.cuda.get_device_name(device)}")
-        LOGGER.info(f"GPU Memory Total: {torch.cuda.get_device_properties(device).total_memory / 1e9:.2f} GB")
-        log_gpu_info(device, "Initial ")
-    log_system_resources("Initial ")
 
     # Directories
     w = save_dir / "weights"  # weights dir
@@ -268,10 +211,6 @@ def train(hyp, opt, device, callbacks):
     # Model
     check_suffix(weights, ".pt")  # check weights
     pretrained = weights.endswith(".pt")
-    
-    LOGGER.info(f"\n{'='*80}\nMODEL INITIALIZATION START: {datetime.now().strftime('%H:%M:%S')}\n{'='*80}")
-    model_start = time.time()
-    
     if pretrained:
         with torch_distributed_zero_first(LOCAL_RANK):
             weights = attempt_download(weights)  # download if not found locally
@@ -285,11 +224,6 @@ def train(hyp, opt, device, callbacks):
     else:
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
     amp = check_amp(model)  # check AMP
-    
-    LOGGER.info(f"Model initialization completed in {time.time() - model_start:.2f}s")
-    if torch.cuda.is_available():
-        log_gpu_info(device, "After model load: ")
-    log_system_resources("After model load: ")
 
     # Freeze
     freeze = [f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
@@ -366,9 +300,6 @@ def train(hyp, opt, device, callbacks):
             LOGGER.info(f"Using slice range filter from: {slice_range}")
 
     # Trainloader
-    LOGGER.info(f"\n{'='*80}\nDATALOADER CREATION START: {datetime.now().strftime('%H:%M:%S')}\n{'='*80}")
-    dataloader_start = time.time()
-    
     train_loader, dataset = create_dataloader(
         train_path,
         imgsz,
@@ -391,13 +322,9 @@ def train(hyp, opt, device, callbacks):
     labels = np.concatenate(dataset.labels, 0)
     mlc = int(labels[:, 0].max())  # max label class
     assert mlc < nc, f"Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}"
-    
-    LOGGER.info(f"Train dataloader created in {time.time() - dataloader_start:.2f}s")
-    LOGGER.info(f"Training images: {len(dataset)}")
 
     # Process 0
     if RANK in {-1, 0}:
-        val_dataloader_start = time.time()
         val_loader = create_dataloader(
             val_path,
             imgsz,
@@ -413,9 +340,6 @@ def train(hyp, opt, device, callbacks):
             prefix=colorstr("val: "),
             slice_range=slice_range,
         )[0]
-        
-        LOGGER.info(f"Val dataloader created in {time.time() - val_dataloader_start:.2f}s")
-        LOGGER.info(f"Validation images: {len(val_loader.dataset)}")
 
         if not resume:
             if not opt.noautoanchor:
@@ -452,27 +376,13 @@ def train(hyp, opt, device, callbacks):
     stopper, stop = EarlyStopping(patience=opt.patience), False
     compute_loss = ComputeLoss(model)  # init loss class
     callbacks.run("on_train_start")
-    
-    LOGGER.info(f"\n{'='*80}\nTRAINING LOOP START: {datetime.now().strftime('%H:%M:%S')}\n{'='*80}")
     LOGGER.info(
         f"Image sizes {imgsz} train, {imgsz} val\n"
         f"Using {train_loader.num_workers * WORLD_SIZE} dataloader workers\n"
         f"Logging results to {colorstr('bold', save_dir)}\n"
         f"Starting training for {epochs} epochs..."
     )
-    if torch.cuda.is_available():
-        log_gpu_info(device, "Before training: ")
-    log_system_resources("Before training: ")
-    
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
-        epoch_start_time = time.time()
-        
-        # Log detailed info every 5 epochs, first epoch, and last epoch
-        log_this_epoch = (epoch % 5 == 0) or (epoch == start_epoch) or (epoch == epochs - 1)
-        
-        if log_this_epoch:
-            LOGGER.info(f"\n{'='*40}\nEPOCH {epoch}/{epochs-1} START: {datetime.now().strftime('%H:%M:%S')}\n{'='*40}")
-        
         callbacks.run("on_train_epoch_start")
         model.train()
 
@@ -557,14 +467,6 @@ def train(hyp, opt, device, callbacks):
         # Scheduler
         lr = [x["lr"] for x in optimizer.param_groups]  # for loggers
         scheduler.step()
-        
-        # Log epoch training time
-        train_time = time.time() - epoch_start_time
-        if log_this_epoch:
-            LOGGER.info(f"\nEpoch {epoch} training completed in {train_time:.2f}s ({train_time/60:.2f} min)")
-            if torch.cuda.is_available():
-                log_gpu_info(device, "After training: ")
-            log_system_resources("After training: ")
 
         if RANK in {-1, 0}:
             # mAP
@@ -572,10 +474,6 @@ def train(hyp, opt, device, callbacks):
             ema.update_attr(model, include=["yaml", "nc", "hyp", "names", "stride", "class_weights"])
             final_epoch = (epoch + 1 == epochs) or stopper.possible_stop
             if not noval or final_epoch:  # Calculate mAP
-                if log_this_epoch or final_epoch:
-                    LOGGER.info(f"Validation START: {datetime.now().strftime('%H:%M:%S')}")
-                val_start_time = time.time()
-                
                 results, maps, _ = validate.run(
                     data_dict,
                     batch_size=batch_size // WORLD_SIZE * 2,
@@ -589,16 +487,9 @@ def train(hyp, opt, device, callbacks):
                     callbacks=callbacks,
                     compute_loss=compute_loss,
                 )
-                
-                val_time = time.time() - val_start_time
-                if log_this_epoch or final_epoch:
-                    LOGGER.info(f"Validation completed in {val_time:.2f}s ({val_time/60:.2f} min)")
-                    if torch.cuda.is_available():
-                        log_gpu_info(device, "After validation: ")
-                    log_system_resources("After validation: ")
 
             # Update best mAP
-            fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
+            fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.1]
             stop = stopper(epoch=epoch, fitness=fi)  # early stop check
             if fi > best_fitness:
                 best_fitness = fi
@@ -607,8 +498,6 @@ def train(hyp, opt, device, callbacks):
 
             # Save model
             if (not nosave) or (final_epoch and not evolve):  # if save
-                save_start_time = time.time()
-                
                 ckpt = {
                     "epoch": epoch,
                     "best_fitness": best_fitness,
@@ -629,10 +518,6 @@ def train(hyp, opt, device, callbacks):
                     torch.save(ckpt, w / f"epoch{epoch}.pt")
                 del ckpt
                 callbacks.run("on_model_save", last, epoch, final_epoch, best_fitness, fi)
-                
-                save_time = time.time() - save_start_time
-                if log_this_epoch or final_epoch:
-                    LOGGER.info(f"Model checkpoint saved in {save_time:.2f}s")
 
         # EarlyStopping
         if RANK != -1:  # if DDP training
@@ -642,30 +527,11 @@ def train(hyp, opt, device, callbacks):
                 stop = broadcast_list[0]
         if stop:
             break  # must break all DDP ranks
-        
-        # Log total epoch time
-        epoch_total_time = time.time() - epoch_start_time
-        if log_this_epoch:
-            LOGGER.info(f"EPOCH {epoch} TOTAL TIME: {epoch_total_time:.2f}s ({epoch_total_time/60:.2f} min)")
-            LOGGER.info(f"{'='*40}\n")
 
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training -----------------------------------------------------------------------------------------------------
-    
-    # Final training summary
-    total_time = time.time() - start_time
-    LOGGER.info(f"\n{'='*80}\nTRAINING COMPLETE\n{'='*80}")
-    LOGGER.info(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    LOGGER.info(f"Total training time: {total_time/3600:.3f} hours ({total_time/60:.2f} minutes)")
-    
     if RANK in {-1, 0}:
-        LOGGER.info(f"\n{epoch - start_epoch + 1} epochs completed in {(time.time() - start_time) / 3600:.3f} hours.")
-        if torch.cuda.is_available():
-            LOGGER.info(f"Final GPU Memory Allocated: {torch.cuda.memory_allocated(device) / 1e9:.2f} GB")
-            LOGGER.info(f"Final GPU Memory Reserved: {torch.cuda.memory_reserved(device) / 1e9:.2f} GB")
-            LOGGER.info(f"Peak GPU Memory Allocated: {torch.cuda.max_memory_allocated(device) / 1e9:.2f} GB")
-            LOGGER.info(f"Peak GPU Memory Reserved: {torch.cuda.max_memory_reserved(device) / 1e9:.2f} GB")
-        
+        LOGGER.info(f"\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.")
         for f in last, best:
             if f.exists():
                 strip_optimizer(f)  # strip optimizers
