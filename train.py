@@ -390,6 +390,8 @@ def train(hyp, opt, device, callbacks):
     )
     labels = np.concatenate(dataset.labels, 0)
     mlc = int(labels[:, 0].max())  # max label class
+    print(f'Label Class: {mlc}')
+    print(f'Num Classes: {nc}')
     assert mlc < nc, f"Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}"
     
     LOGGER.info(f"Train dataloader created in {time.time() - dataloader_start:.2f}s")

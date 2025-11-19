@@ -263,3 +263,5 @@ data/dicoms
 
 # Slurm output files
 *.out
+
+yolo_dataset_tears/
