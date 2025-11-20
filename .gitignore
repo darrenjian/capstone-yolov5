@@ -261,7 +261,22 @@ fabric.properties
 yolo_dataset/
 data/dicoms
 
-# Slurm output files
-*.out
+# Slurm scripts
+capstone_scripts/
 
-yolo_dataset_tears/
+# Hyperparameter config files
+data/hyps/
+
+# Slurm output files
+slurm*.out
+train_n_box_0_1.out
+train_n_box_0_25.out
+train_n_box_0_50.out
+train_n_cls_0_05.out
+train_n_cls_0_005.out
+train_n_cls_pw_0_5.out
+train_n_cls_pw_1_5.out
+train_n_cls_pw_3_0.out
+n_baseline_meniscus.out
+n_cls_05_meniscus.out
+
