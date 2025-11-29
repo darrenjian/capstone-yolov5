@@ -257,12 +257,8 @@ com_crashlytics_export_strings.xml
 crashlytics.properties
 crashlytics-build.properties
 fabric.properties
-
 yolo_dataset/
 data/dicoms
-
-# Slurm scripts
-capstone_scripts/
 
 # Hyperparameter config files
 data/hyps/
@@ -279,4 +275,7 @@ train_n_cls_pw_1_5.out
 train_n_cls_pw_3_0.out
 n_baseline_meniscus.out
 n_cls_05_meniscus.out
+
+# Other scripts
+capstone_scripts/extract_best_map10.py
 
