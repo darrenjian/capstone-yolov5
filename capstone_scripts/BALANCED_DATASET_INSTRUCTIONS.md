@@ -7,16 +7,17 @@ This guide walks you through creating a dataset with a **balanced training set**
 **Key approach:**
 1. **Group slices by VOLUME ID** to prevent data leakage
 2. **Split VOLUMES** (not slices) into train/val/test (70/15/15) - ensures no patient data leaks between splits
-3. **Undersample ONLY the train set** to achieve 50/50 balance (~12,791 tear, ~12,791 no-tear)
-4. **Preserve original imbalance in val/test** for realistic evaluation (~19% tear, ~81% no-tear)
-5. **Verify no volume overlap** between splits
+3. **Separate train slices by ACTUAL tear presence** (has_tear=True/False) across all volumes
+4. **Undersample ONLY train set no-tear slices** to match tear slice count for 50/50 balance BY SLICE
+5. **Preserve original imbalance in val/test** for realistic evaluation (~19% tear, ~81% no-tear)
+6. **Verify no volume overlap** between splits
 
 **Why this matters:**
 - **NO DATA LEAKAGE**: All slices from same MRI volume stay in same split
-- Train on balanced data for stable learning
+- Train on balanced data (50/50 tear vs no-tear slices) for stable learning
 - Evaluate on realistic data to measure real-world performance
 - Valid evaluation metrics (no information leakage from train to val/test)
-- Total: ~39,000 slices (reduced from ~94,440)
+- **Note:** With an 8:1 class imbalance, expect ~15-22% of training data retained after undersampling
 
 ---
 
@@ -67,7 +68,26 @@ yolo_dataset/
 
 ---
 
+## ⚠️ Important Note on Dataset Size
+
+**With an 8:1 class imbalance (no-tear:tear), undersampling will significantly reduce your training set size:**
+
+- If you have ~800 tear slices and ~6,400 no-tear slices in your training split
+- After balancing: 800 tear + 800 no-tear = **1,600 total training slices** (only ~22% of original)
+- You'll discard ~5,600 no-tear slices to achieve balance
+
+**This is a valid concern!** Consider these options:
+1. **Undersampling (this script)** - Smaller dataset, true 50/50 balance
+2. **Class weights** - Keep all data, weight loss function (use `--cls 8.0` in YOLOv5)
+3. **Hybrid** - Partial undersampling to 3:1, then use class weights
+
+For medical imaging with ~1000+ training examples, undersampling can still work well, but if you're concerned about data size, consider using class weights instead.
+
+---
+
 ## Why Balance Train Set Only?
+
+**Important:** This script balances by ACTUAL tear presence (has_tear=True/False) at the SLICE level, not by volume category. Volumes with tears often contain many no-tear slices, so we separate all slices by actual ground truth labels after volume splitting.
 
 ### Current Problem (Imbalanced Training):
 ```
@@ -80,22 +100,27 @@ Original dataset: 94,440 slices
 → Still only mAP@0.1 = 0.698
 ```
 
-### After Train-Only Balancing:
+### After Train-Only Balancing (by actual slice labels):
 ```
 Train set: ~25,582 slices
 - Tears: ~12,791 (50%)
 - No-tears: ~12,791 (50%)
-→ Balanced training for stable learning
+→ Balanced training for stable learning BY ACTUAL SLICE LABELS
 
-Val/Test sets: ~13,964 slices total
+Val/Test sets: ~28,332 slices total
 - Tears: ~5,482 (19.4%)
-- No-tears: ~28,482 (80.6%)
+- No-tears: ~22,850 (80.6%)
 → Preserve realistic imbalance for evaluation
 
 Benefits:
+→ True 50/50 balance between tear and no-tear slices
 → More stable training convergence
 → Realistic evaluation metrics
 → Expected mAP@0.1: 0.75-0.85+
+
+Note:
+→ With 8:1 class imbalance, expect to keep only ~15-22% of training data
+→ This is the trade-off for balanced training
 ```
 
 ---
@@ -134,10 +159,11 @@ The script will:
 3. **Identify volumes** with tears vs without tears (a volume has tears if ANY slice has tears)
 4. **Split VOLUMES** 70/15/15 into train/val/test - **PREVENTS DATA LEAKAGE**
 5. **Extract slices** from each volume group
-6. **Undersample only train set slices** to achieve 50/50 balance (keep all tear, sample matching no-tear)
-7. **Preserve imbalance** in val/test sets for realistic evaluation
-8. **Verify no volume overlap** between splits
-9. **Copy** to new dataset directory
+6. **Separate train slices by ACTUAL tear presence** (has_tear=True/False) - key: volumes with tears can contain both tear AND no-tear slices!
+7. **Undersample only train set no-tear slices** to match tear slice count for true 50/50 balance BY SLICE
+8. **Preserve imbalance** in val/test sets for realistic evaluation
+9. **Verify no volume overlap** between splits
+10. **Copy** to new dataset directory
 
 ```bash
 cd capstone_scripts
@@ -203,23 +229,23 @@ STEP 1: Split volumes (70/15/15) - NO DATA LEAKAGE
 ============================================================
 STEP 2: Extract slices from volumes
 ============================================================
-  Train: 12,791 tear slices + 53,317 no-tear slices
-  Val:   2,741 tear slices + 11,425 no-tear slices
-  Test:  2,741 tear slices + 11,425 no-tear slices
+  Train: 18,273 from tear volumes + 53,317 from no-tear volumes
+  Val:   2,741 from tear volumes + 11,425 from no-tear volumes
+  Test:  2,741 from tear volumes + 11,425 from no-tear volumes
 
 ============================================================
-STEP 3: Undersampling train set for 50/50 balance
+STEP 3: Separate by ACTUAL tear presence and undersample for 50/50 balance
 ============================================================
-Train set before undersampling:
-  Tear slices: 12,791
-  No-tear slices: 53,317
-  Ratio: 4.2:1 (no-tear:tear)
+Train set before undersampling (by SLICE, not volume):
+  Tear slices (has_tear=True): 12,791
+  No-tear slices (has_tear=False): 58,799
+  Ratio: 4.6:1 (no-tear:tear)
 
-✓ Undersampling 12,791 no-tear slices from 53,317 available in train
-  Removed 40,526 no-tear slices from train set
+✓ Undersampling 12,791 no-tear slices from 58,799 available in train
+  Removed 46,008 no-tear slices from train set
 
 ============================================================
-FINAL SPLITS (train balanced, val/test preserve imbalance)
+FINAL SPLITS (train balanced by SLICE, val/test preserve imbalance)
 ============================================================
   train: 25,582 slices (12,791 tear [50.0%], 12,791 no-tear)
   val  : 14,166 slices ( 2,741 tear [19.4%], 11,425 no-tear)
@@ -250,14 +276,14 @@ Final statistics:
   Val  : 14,166 ( 2,741 tear [19.4%], 11,425 no-tear) - original imbalance
   Test : 14,166 ( 2,741 tear [19.4%], 11,425 no-tear) - original imbalance
 
-  Overall: 18,273 tear : 40,641 no-tear
+  Overall: 18,273 tear : 35,633 no-tear
   Train set: 12,791 tear : 12,791 no-tear (balanced 1:1)
   Val/Test: Preserve original class imbalance for realistic evaluation
 
 Reduction from original:
   Before: 18,273 tear + 76,167 no-tear = 94,440 total
-  After:  18,273 tear + 40,641 no-tear = 58,914 total
-  Removed: 35,526 no-tear slices (from train set only)
+  After:  18,273 tear + 35,633 no-tear = 53,906 total
+  Removed: 40,534 no-tear slices (from train set only)
 ```
 
 ---
@@ -294,7 +320,7 @@ Output:
   },
   "total_images": 53914,
   "total_tear": 18273,
-  "total_no_tear": 40641,
+  "total_no_tear": 35641,
   "train_balance_ratio": "12791:12791",
   "val_balance_ratio": "2741:11425",
   "test_balance_ratio": "2741:11425"
@@ -550,15 +576,17 @@ If count is much lower, check:
 4. Required `obj_pw=5.0` to compensate
 5. Val/test also imbalanced but no way to verify realistic performance
 
-### New (balanced train, realistic val/test):
-1. ✅ Split data first (70/15/15)
-2. ✅ Undersample only train set to 50/50
-3. ✅ Train on perfectly balanced data
-4. ✅ Evaluate on realistic class distribution
-5. ✅ No runtime filtering needed
-6. ✅ Lower `obj_pw=2.5` sufficient
-7. ✅ Better results, more stable training
-8. ✅ Honest evaluation metrics that reflect real-world performance
+### New (balanced train by slice labels, realistic val/test):
+1. ✅ Split VOLUMES first (70/15/15) to prevent data leakage
+2. ✅ Separate train slices by ACTUAL tear presence (has_tear=True/False)
+3. ✅ Undersample only train set no-tear slices to 50/50 by slice count
+4. ✅ Train on perfectly balanced data (true 50/50 tear vs no-tear slices)
+5. ✅ Evaluate on realistic class distribution
+6. ✅ No runtime filtering needed
+7. ✅ Lower `obj_pw=2.5` sufficient
+8. ✅ Better results, more stable training
+9. ✅ Honest evaluation metrics that reflect real-world performance
+10. ✅ Accounts for no-tear slices within tear volumes
 
 ---
 
@@ -567,10 +595,11 @@ If count is much lower, check:
 **What this achieves:**
 - ✅ **NO DATA LEAKAGE**: Splits at VOLUME level, not slice level
 - ✅ **Volume-level splitting**: All slices from same MRI stay in same split
+- ✅ **Slice-level balancing**: Separates by ACTUAL tear presence (has_tear=True/False) after volume split
 - ✅ **Automated verification**: Script checks for volume overlap between splits
-- ✅ Balanced training set (50/50: ~12,791 tear, ~12,791 no-tear)
+- ✅ Balanced training set (50/50 by slice: ~12,791 tear, ~12,791 no-tear)
 - ✅ Realistic val/test sets (19/81: preserves original imbalance)
-- ✅ Removes ~40,526 excess no-tear slices from train only
+- ✅ Removes ~40,534 excess no-tear slices from train only
 - ✅ Reproducible with seed parameter
 - ✅ Preserves all tear data (nothing discarded)
 

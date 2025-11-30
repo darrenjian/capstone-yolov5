@@ -8,13 +8,17 @@ and creates a dataset with balanced training set by:
 2. Grouping slices by VOLUME ID to prevent data leakage
 3. Identifying volumes with tears vs without tears
 4. Splitting VOLUMES (not slices) into train/val/test (70/15/15) - NO DATA LEAKAGE
-5. Undersampling ONLY the train set slices to achieve 50/50 balance
-6. Preserving original class imbalance in val/test sets for realistic evaluation
-7. Verifying no volume appears in multiple splits
-8. Organizing into YOLO format
+5. Separating train slices by ACTUAL tear presence (has_tear=True/False)
+6. Undersampling ONLY the train set no-tear slices to match tear slice count (50/50 balance BY SLICE)
+7. Preserving original class imbalance in val/test sets for realistic evaluation
+8. Verifying no volume appears in multiple splits
+9. Organizing into YOLO format
 
 IMPORTANT: This prevents data leakage by ensuring all slices from the same MRI volume
 stay in the same split (train/val/test).
+
+NOTE: After undersampling, the training set may be significantly smaller due to class imbalance.
+For example, with an 8:1 no-tear:tear ratio, you'll keep only ~22% of training data.
 
 Usage:
     python create_balanced_dataset.py \
@@ -160,8 +164,9 @@ def sample_and_split(tear_volumes, no_tear_volumes, train_ratio=0.7, val_ratio=0
     This approach PREVENTS DATA LEAKAGE by:
     1. First splits VOLUMES (not slices) into train/val/test using specified ratios
     2. Extracts all slices from each volume group
-    3. Undersamples only the train set slices to achieve 50/50 balance
-    4. Preserves original class imbalance in val/test for realistic evaluation
+    3. Separates slices by actual tear presence (has_tear attribute)
+    4. Undersamples only the train set slices to achieve 50/50 balance BY SLICE COUNT
+    5. Preserves original class imbalance in val/test for realistic evaluation
 
     Args:
         tear_volumes: Dict of {volume_id: [list of slices]} for volumes with tears
@@ -171,7 +176,7 @@ def sample_and_split(tear_volumes, no_tear_volumes, train_ratio=0.7, val_ratio=0
 
     Returns:
         dict with 'train', 'val', 'test' keys, each containing slices
-        train is balanced 50/50, val/test preserve original imbalance
+        train is balanced 50/50 BY ACTUAL TEAR/NO-TEAR SLICE COUNT, val/test preserve original imbalance
     """
     random.seed(seed)
 
@@ -228,31 +233,38 @@ def sample_and_split(tear_volumes, no_tear_volumes, train_ratio=0.7, val_ratio=0
             slices.extend(volume_dict[vol_id])
         return slices
 
-    tear_train_slices = extract_slices_from_volumes(tear_train_vols, tear_volumes)
-    tear_val_slices = extract_slices_from_volumes(tear_val_vols, tear_volumes)
-    tear_test_slices = extract_slices_from_volumes(tear_test_vols, tear_volumes)
+    # Extract all slices for each split (from both tear and no-tear volumes)
+    train_slices_from_tear_vols = extract_slices_from_volumes(tear_train_vols, tear_volumes)
+    val_slices_from_tear_vols = extract_slices_from_volumes(tear_val_vols, tear_volumes)
+    test_slices_from_tear_vols = extract_slices_from_volumes(tear_test_vols, tear_volumes)
 
-    no_tear_train_slices = extract_slices_from_volumes(no_tear_train_vols, no_tear_volumes)
-    no_tear_val_slices = extract_slices_from_volumes(no_tear_val_vols, no_tear_volumes)
-    no_tear_test_slices = extract_slices_from_volumes(no_tear_test_vols, no_tear_volumes)
+    train_slices_from_no_tear_vols = extract_slices_from_volumes(no_tear_train_vols, no_tear_volumes)
+    val_slices_from_no_tear_vols = extract_slices_from_volumes(no_tear_val_vols, no_tear_volumes)
+    test_slices_from_no_tear_vols = extract_slices_from_volumes(no_tear_test_vols, no_tear_volumes)
 
     print(f"\n{'='*60}")
     print("STEP 2: Extract slices from volumes")
     print(f"{'='*60}")
-    print(f"  Train: {len(tear_train_slices):,} tear slices + {len(no_tear_train_slices):,} no-tear slices")
-    print(f"  Val:   {len(tear_val_slices):,} tear slices + {len(no_tear_val_slices):,} no-tear slices")
-    print(f"  Test:  {len(tear_test_slices):,} tear slices + {len(no_tear_test_slices):,} no-tear slices")
+    print(f"  Train: {len(train_slices_from_tear_vols):,} from tear volumes + {len(train_slices_from_no_tear_vols):,} from no-tear volumes")
+    print(f"  Val:   {len(val_slices_from_tear_vols):,} from tear volumes + {len(val_slices_from_no_tear_vols):,} from no-tear volumes")
+    print(f"  Test:  {len(test_slices_from_tear_vols):,} from tear volumes + {len(test_slices_from_no_tear_vols):,} from no-tear volumes")
 
-    # Step 3: Undersample ONLY the train set to achieve 50/50 balance
+    # Step 3: Separate train slices by ACTUAL tear presence (has_tear attribute)
+    # This is KEY: tear volumes can contain no-tear slices too!
+    all_train_slices = train_slices_from_tear_vols + train_slices_from_no_tear_vols
+
+    tear_train_slices = [s for s in all_train_slices if s['has_tear']]
+    no_tear_train_slices = [s for s in all_train_slices if not s['has_tear']]
+
     n_tear_train = len(tear_train_slices)
     n_no_tear_train = len(no_tear_train_slices)
 
     print(f"\n{'='*60}")
-    print("STEP 3: Undersample train set for 50/50 balance")
+    print("STEP 3: Separate by ACTUAL tear presence and undersample for 50/50 balance")
     print(f"{'='*60}")
-    print(f"Train set before undersampling:")
-    print(f"  Tear slices: {n_tear_train:,}")
-    print(f"  No-tear slices: {n_no_tear_train:,}")
+    print(f"Train set before undersampling (by SLICE, not volume):")
+    print(f"  Tear slices (has_tear=True): {n_tear_train:,}")
+    print(f"  No-tear slices (has_tear=False): {n_no_tear_train:,}")
     if n_tear_train > 0:
         print(f"  Ratio: {n_no_tear_train/n_tear_train:.1f}:1 (no-tear:tear)")
 
@@ -270,8 +282,8 @@ def sample_and_split(tear_volumes, no_tear_volumes, train_ratio=0.7, val_ratio=0
     random.shuffle(train_combined)
 
     # Val and test keep original imbalance - just combine and shuffle
-    val_combined = tear_val_slices + no_tear_val_slices
-    test_combined = tear_test_slices + no_tear_test_slices
+    val_combined = val_slices_from_tear_vols + val_slices_from_no_tear_vols
+    test_combined = test_slices_from_tear_vols + test_slices_from_no_tear_vols
     random.shuffle(val_combined)
     random.shuffle(test_combined)
 
@@ -283,7 +295,7 @@ def sample_and_split(tear_volumes, no_tear_volumes, train_ratio=0.7, val_ratio=0
 
     # Print final split statistics
     print(f"\n{'='*60}")
-    print(f"FINAL SPLITS (train balanced, val/test preserve imbalance)")
+    print(f"FINAL SPLITS (train balanced by SLICE, val/test preserve imbalance)")
     print(f"{'='*60}")
 
     for split_name, slices in splits.items():
