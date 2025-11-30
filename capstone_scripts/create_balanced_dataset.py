@@ -3,12 +3,18 @@
 Create Balanced Dataset for Tear Detection
 
 Takes an existing combined YOLO dataset (created with batch_convert_annotations.py --append)
-and creates a balanced dataset by:
+and creates a dataset with balanced training set by:
 1. Pooling all slices from existing train/val/test splits
-2. Identifying slices with tears (non-empty labels) vs without tears (empty labels)
-3. Randomly sampling from no-tear slices to match tear slice count
-4. Creating new train/val/test splits (70/15/15) at the slice level
-5. Organizing into YOLO format
+2. Grouping slices by VOLUME ID to prevent data leakage
+3. Identifying volumes with tears vs without tears
+4. Splitting VOLUMES (not slices) into train/val/test (70/15/15) - NO DATA LEAKAGE
+5. Undersampling ONLY the train set slices to achieve 50/50 balance
+6. Preserving original class imbalance in val/test sets for realistic evaluation
+7. Verifying no volume appears in multiple splits
+8. Organizing into YOLO format
+
+IMPORTANT: This prevents data leakage by ensuring all slices from the same MRI volume
+stay in the same split (train/val/test).
 
 Usage:
     python create_balanced_dataset.py \
@@ -27,6 +33,29 @@ from pathlib import Path
 from tqdm import tqdm
 
 
+def extract_volume_id(filename):
+    """
+    Extract volume ID from filename.
+
+    Filenames are formatted as: IM1-01-02-00011.dcm
+    Volume ID is the suffix after the base name: 01-02-00011
+
+    Args:
+        filename: Path object or string filename
+
+    Returns:
+        Volume ID string (e.g., "01-02-00011")
+    """
+    stem = Path(filename).stem  # Remove extension
+    # Split by dash and take everything after the first part (IM1, IM2, etc.)
+    parts = stem.split('-', 1)
+    if len(parts) > 1:
+        return parts[1]  # Return volume suffix
+    else:
+        # Fallback: if no dash, return the whole stem
+        return stem
+
+
 def is_label_empty(label_path):
     """Check if a label file is empty (no annotations)"""
     if not label_path.exists():
@@ -39,24 +68,28 @@ def is_label_empty(label_path):
 
 def scan_combined_dataset(dataset_root):
     """
-    Scan a combined YOLO dataset and categorize ALL slices by tear presence.
+    Scan a combined YOLO dataset and group slices by volume.
 
-    Pools slices from all existing splits (train/val/test) to re-balance and re-split.
+    Pools slices from all existing splits and groups them by volume ID to prevent data leakage.
 
     Args:
         dataset_root: Path to combined YOLO dataset with images/ and labels/ directories
 
     Returns:
-        dict with 'tear_slices' and 'no_tear_slices' lists
-        Each entry is {'image': path, 'label': path, 'original_split': split_name}
+        dict with 'tear_volumes' and 'no_tear_volumes' keys
+        Each entry is a dict: {volume_id: [list of slice_info dicts]}
+        A volume is "tear" if ANY of its slices have tears
     """
     dataset_root = Path(dataset_root)
 
-    tear_slices = []
-    no_tear_slices = []
+    # Group slices by volume
+    volumes = defaultdict(list)
 
     print(f"\nScanning combined dataset: {dataset_root}")
-    print("Pooling slices from all existing splits (train/val/test)...")
+    print("Pooling slices from all existing splits and grouping by volume...")
+
+    total_tear_slices = 0
+    total_no_tear_slices = 0
 
     # Scan all splits - we'll pool everything and re-split later
     for split in ['train', 'val', 'test']:
@@ -67,10 +100,6 @@ def scan_combined_dataset(dataset_root):
             print(f"  Warning: {split}/ not found, skipping")
             continue
 
-        # Count slices in this split
-        split_tear = 0
-        split_no_tear = 0
-
         # Process all image files
         for img_path in images_dir.glob('*'):
             if img_path.suffix.lower() not in ['.dcm', '.png', '.jpg', '.jpeg']:
@@ -79,89 +108,186 @@ def scan_combined_dataset(dataset_root):
             # Find corresponding label file
             label_path = labels_dir / (img_path.stem + '.txt')
 
+            # Extract volume ID
+            volume_id = extract_volume_id(img_path.name)
+
             slice_info = {
                 'image': img_path,
                 'label': label_path,
-                'original_split': split
+                'original_split': split,
+                'has_tear': not is_label_empty(label_path)
             }
 
-            # Categorize by tear presence
-            if is_label_empty(label_path):
-                no_tear_slices.append(slice_info)
-                split_no_tear += 1
-            else:
-                tear_slices.append(slice_info)
-                split_tear += 1
+            volumes[volume_id].append(slice_info)
 
-        print(f"  {split:5s}: {split_tear:6d} tear, {split_no_tear:6d} no-tear")
+            # Track slice counts
+            if slice_info['has_tear']:
+                total_tear_slices += 1
+            else:
+                total_no_tear_slices += 1
+
+    # Categorize volumes by tear presence
+    # A volume has tears if ANY slice has tears
+    tear_volumes = {}
+    no_tear_volumes = {}
+
+    for volume_id, slices in volumes.items():
+        has_any_tear = any(s['has_tear'] for s in slices)
+        if has_any_tear:
+            tear_volumes[volume_id] = slices
+        else:
+            no_tear_volumes[volume_id] = slices
+
+    print(f"\n  Total slices: {total_tear_slices:,} tear, {total_no_tear_slices:,} no-tear")
+    print(f"  Total volumes: {len(tear_volumes):,} with tears, {len(no_tear_volumes):,} without tears")
+
+    # Print volume statistics
+    tear_slices_in_tear_vols = sum(len(slices) for slices in tear_volumes.values())
+    no_tear_slices_in_no_tear_vols = sum(len(slices) for slices in no_tear_volumes.values())
+    print(f"  Slices per category: {tear_slices_in_tear_vols:,} in tear volumes, {no_tear_slices_in_no_tear_vols:,} in no-tear volumes")
 
     return {
-        'tear_slices': tear_slices,
-        'no_tear_slices': no_tear_slices
+        'tear_volumes': tear_volumes,
+        'no_tear_volumes': no_tear_volumes
     }
 
 
-def sample_and_split(tear_slices, no_tear_slices, train_ratio=0.7, val_ratio=0.15,
+def sample_and_split(tear_volumes, no_tear_volumes, train_ratio=0.7, val_ratio=0.15,
                      test_ratio=0.15, seed=42):
     """
-    Sample no-tear slices to match tear count and split into train/val/test
+    Split volumes into train/val/test, then undersample ONLY train set for balance
+
+    This approach PREVENTS DATA LEAKAGE by:
+    1. First splits VOLUMES (not slices) into train/val/test using specified ratios
+    2. Extracts all slices from each volume group
+    3. Undersamples only the train set slices to achieve 50/50 balance
+    4. Preserves original class imbalance in val/test for realistic evaluation
 
     Args:
-        tear_slices: List of slices with tears
-        no_tear_slices: List of slices without tears
+        tear_volumes: Dict of {volume_id: [list of slices]} for volumes with tears
+        no_tear_volumes: Dict of {volume_id: [list of slices]} for volumes without tears
         train_ratio, val_ratio, test_ratio: Split ratios
         seed: Random seed
 
     Returns:
-        dict with 'train', 'val', 'test' keys, each containing balanced slices
+        dict with 'train', 'val', 'test' keys, each containing slices
+        train is balanced 50/50, val/test preserve original imbalance
     """
     random.seed(seed)
 
-    n_tear = len(tear_slices)
-    n_no_tear = len(no_tear_slices)
+    n_tear_vols = len(tear_volumes)
+    n_no_tear_vols = len(no_tear_volumes)
+
+    # Count total slices
+    total_tear_slices = sum(len(slices) for slices in tear_volumes.values())
+    total_no_tear_slices = sum(len(slices) for slices in no_tear_volumes.values())
 
     print(f"\n{'='*60}")
-    print("BALANCING DATASET")
+    print("SPLITTING VOLUMES (PREVENTS DATA LEAKAGE)")
     print(f"{'='*60}")
-    print(f"Original class distribution (pooled from all splits):")
-    print(f"  Tear slices: {n_tear:,}")
-    print(f"  No-tear slices: {n_no_tear:,}")
-    print(f"  Imbalance ratio: {n_no_tear/n_tear:.1f}:1 (no-tear:tear)")
+    print(f"Original distribution:")
+    print(f"  Volumes: {n_tear_vols:,} with tears, {n_no_tear_vols:,} without tears")
+    print(f"  Slices: {total_tear_slices:,} in tear volumes, {total_no_tear_slices:,} in no-tear volumes")
 
-    # Sample no-tear slices to match tear count
-    if n_no_tear < n_tear:
-        print(f"\n⚠️  Warning: Not enough no-tear slices ({n_no_tear:,}) to match tears ({n_tear:,})")
-        print(f"  Using all {n_no_tear:,} no-tear slices")
-        sampled_no_tear = no_tear_slices.copy()
+    # Step 1: Split VOLUMES into train/val/test
+    tear_vol_ids = list(tear_volumes.keys())
+    no_tear_vol_ids = list(no_tear_volumes.keys())
+    random.shuffle(tear_vol_ids)
+    random.shuffle(no_tear_vol_ids)
+
+    # Split tear volumes
+    n_tear_vols = len(tear_vol_ids)
+    tear_train_end = int(n_tear_vols * train_ratio)
+    tear_val_end = tear_train_end + int(n_tear_vols * val_ratio)
+
+    tear_train_vols = tear_vol_ids[:tear_train_end]
+    tear_val_vols = tear_vol_ids[tear_train_end:tear_val_end]
+    tear_test_vols = tear_vol_ids[tear_val_end:]
+
+    # Split no-tear volumes
+    n_no_tear_vols = len(no_tear_vol_ids)
+    no_tear_train_end = int(n_no_tear_vols * train_ratio)
+    no_tear_val_end = no_tear_train_end + int(n_no_tear_vols * val_ratio)
+
+    no_tear_train_vols = no_tear_vol_ids[:no_tear_train_end]
+    no_tear_val_vols = no_tear_vol_ids[no_tear_train_end:no_tear_val_end]
+    no_tear_test_vols = no_tear_vol_ids[no_tear_val_end:]
+
+    print(f"\n{'='*60}")
+    print("STEP 1: Split volumes (70/15/15) - NO DATA LEAKAGE")
+    print(f"{'='*60}")
+    print(f"  Train: {len(tear_train_vols):,} tear volumes + {len(no_tear_train_vols):,} no-tear volumes")
+    print(f"  Val:   {len(tear_val_vols):,} tear volumes + {len(no_tear_val_vols):,} no-tear volumes")
+    print(f"  Test:  {len(tear_test_vols):,} tear volumes + {len(no_tear_test_vols):,} no-tear volumes")
+
+    # Step 2: Extract slices from each volume group
+    def extract_slices_from_volumes(volume_ids, volume_dict):
+        """Extract all slices from given volume IDs"""
+        slices = []
+        for vol_id in volume_ids:
+            slices.extend(volume_dict[vol_id])
+        return slices
+
+    tear_train_slices = extract_slices_from_volumes(tear_train_vols, tear_volumes)
+    tear_val_slices = extract_slices_from_volumes(tear_val_vols, tear_volumes)
+    tear_test_slices = extract_slices_from_volumes(tear_test_vols, tear_volumes)
+
+    no_tear_train_slices = extract_slices_from_volumes(no_tear_train_vols, no_tear_volumes)
+    no_tear_val_slices = extract_slices_from_volumes(no_tear_val_vols, no_tear_volumes)
+    no_tear_test_slices = extract_slices_from_volumes(no_tear_test_vols, no_tear_volumes)
+
+    print(f"\n{'='*60}")
+    print("STEP 2: Extract slices from volumes")
+    print(f"{'='*60}")
+    print(f"  Train: {len(tear_train_slices):,} tear slices + {len(no_tear_train_slices):,} no-tear slices")
+    print(f"  Val:   {len(tear_val_slices):,} tear slices + {len(no_tear_val_slices):,} no-tear slices")
+    print(f"  Test:  {len(tear_test_slices):,} tear slices + {len(no_tear_test_slices):,} no-tear slices")
+
+    # Step 3: Undersample ONLY the train set to achieve 50/50 balance
+    n_tear_train = len(tear_train_slices)
+    n_no_tear_train = len(no_tear_train_slices)
+
+    print(f"\n{'='*60}")
+    print("STEP 3: Undersample train set for 50/50 balance")
+    print(f"{'='*60}")
+    print(f"Train set before undersampling:")
+    print(f"  Tear slices: {n_tear_train:,}")
+    print(f"  No-tear slices: {n_no_tear_train:,}")
+    if n_tear_train > 0:
+        print(f"  Ratio: {n_no_tear_train/n_tear_train:.1f}:1 (no-tear:tear)")
+
+    if n_no_tear_train < n_tear_train:
+        print(f"\n⚠️  Warning: Train has fewer no-tear ({n_no_tear_train:,}) than tear ({n_tear_train:,})")
+        print(f"  This is unusual - keeping all train slices")
+        no_tear_train_balanced = no_tear_train_slices
     else:
-        print(f"\n✓ Randomly sampling {n_tear:,} no-tear slices from {n_no_tear:,} available")
-        sampled_no_tear = random.sample(no_tear_slices, n_tear)
+        print(f"\n✓ Undersampling {n_tear_train:,} no-tear slices from {n_no_tear_train:,} available in train")
+        no_tear_train_balanced = random.sample(no_tear_train_slices, n_tear_train)
+        print(f"  Removed {n_no_tear_train - n_tear_train:,} no-tear slices from train set")
 
-    # Combine and shuffle
-    all_slices = tear_slices + sampled_no_tear
-    random.shuffle(all_slices)
+    # Combine train set and shuffle
+    train_combined = tear_train_slices + no_tear_train_balanced
+    random.shuffle(train_combined)
 
-    print(f"\nBalanced dataset size: {len(all_slices):,} slices (50% tear, 50% no-tear)")
-
-    # Split into train/val/test
-    n_total = len(all_slices)
-    train_end = int(n_total * train_ratio)
-    val_end = train_end + int(n_total * val_ratio)
+    # Val and test keep original imbalance - just combine and shuffle
+    val_combined = tear_val_slices + no_tear_val_slices
+    test_combined = tear_test_slices + no_tear_test_slices
+    random.shuffle(val_combined)
+    random.shuffle(test_combined)
 
     splits = {
-        'train': all_slices[:train_end],
-        'val': all_slices[train_end:val_end],
-        'test': all_slices[val_end:]
+        'train': train_combined,
+        'val': val_combined,
+        'test': test_combined
     }
 
-    # Print split statistics
+    # Print final split statistics
     print(f"\n{'='*60}")
-    print(f"NEW SPLITS (at slice level, not volume level)")
+    print(f"FINAL SPLITS (train balanced, val/test preserve imbalance)")
     print(f"{'='*60}")
-    print(f"Split ratios: {train_ratio:.0%} / {val_ratio:.0%} / {test_ratio:.0%}\n")
 
     for split_name, slices in splits.items():
-        n_tear_in_split = sum(1 for s in slices if not is_label_empty(s['label']))
+        n_tear_in_split = sum(1 for s in slices if s['has_tear'])
         n_no_tear_in_split = len(slices) - n_tear_in_split
         tear_pct = 100 * n_tear_in_split / len(slices) if slices else 0
         print(f"  {split_name:5s}: {len(slices):6,d} slices "
@@ -217,10 +343,10 @@ def copy_dataset(splits, output_root):
 
             # Update stats
             stats[split_name]['total'] += 1
-            if is_label_empty(label_dest):
-                stats[split_name]['no_tear'] += 1
-            else:
+            if slice_info['has_tear']:
                 stats[split_name]['tear'] += 1
+            else:
+                stats[split_name]['no_tear'] += 1
 
     return dict(stats)
 
@@ -231,9 +357,13 @@ def create_dataset_yaml(output_root, stats):
     total_tears = sum(s['tear'] for s in stats.values())
     total_no_tears = sum(s['no_tear'] for s in stats.values())
 
-    yaml_content = f"""# YOLOv5 Dataset Configuration - Balanced Tear Detection
+    train_tear_pct = 100 * stats['train']['tear'] / stats['train']['total'] if stats['train']['total'] > 0 else 0
+    val_tear_pct = 100 * stats['val']['tear'] / stats['val']['total'] if stats['val']['total'] > 0 else 0
+    test_tear_pct = 100 * stats['test']['tear'] / stats['test']['total'] if stats['test']['total'] > 0 else 0
+
+    yaml_content = f"""# YOLOv5 Dataset Configuration - Balanced Train, Realistic Val/Test
 # Auto-generated by create_balanced_dataset.py
-# Source: Re-balanced and re-split from combined dataset
+# Source: Re-split and train-balanced from combined dataset
 
 # Dataset paths
 path: {output_root.absolute()}
@@ -248,11 +378,11 @@ names:
 
 # Dataset Statistics
 # Total images: {total_images:,}
-# - Train: {stats['train']['total']:,} ({stats['train']['tear']:,} tear, {stats['train']['no_tear']:,} no-tear)
-# - Val: {stats['val']['total']:,} ({stats['val']['tear']:,} tear, {stats['val']['no_tear']:,} no-tear)
-# - Test: {stats['test']['total']:,} ({stats['test']['tear']:,} tear, {stats['test']['no_tear']:,} no-tear)
+# - Train: {stats['train']['total']:,} ({stats['train']['tear']:,} tear [{train_tear_pct:.1f}%], {stats['train']['no_tear']:,} no-tear) - BALANCED
+# - Val:   {stats['val']['total']:,} ({stats['val']['tear']:,} tear [{val_tear_pct:.1f}%], {stats['val']['no_tear']:,} no-tear) - Original imbalance
+# - Test:  {stats['test']['total']:,} ({stats['test']['tear']:,} tear [{test_tear_pct:.1f}%], {stats['test']['no_tear']:,} no-tear) - Original imbalance
 #
-# Class balance: {total_tears:,} tear : {total_no_tears:,} no-tear (50:50 ratio)
+# Overall: {total_tears:,} tear : {total_no_tears:,} no-tear
 
 # Image properties:
 # - Size: 512x512 pixels
@@ -261,8 +391,9 @@ names:
 
 # Note: This dataset was created by:
 # 1. Pooling all slices from original train/val/test splits
-# 2. Balancing by sampling no-tear slices to match tear count
-# 3. Re-splitting at slice level (not volume level)
+# 2. Splitting all slices into new train/val/test (70/15/15)
+# 3. Undersampling ONLY train set to achieve 50/50 balance
+# 4. Preserving original imbalance in val/test for realistic evaluation
 """
 
     yaml_path = output_root / 'dataset.yaml'
@@ -273,8 +404,64 @@ names:
     return yaml_path
 
 
+def verify_no_data_leakage(splits):
+    """
+    Verify that no volume appears in multiple splits.
+
+    Args:
+        splits: Dict with 'train', 'val', 'test' keys containing slices
+
+    Returns:
+        tuple: (is_valid, message)
+    """
+    # Collect volume IDs from each split
+    train_volumes = set(extract_volume_id(s['image'].name) for s in splits['train'])
+    val_volumes = set(extract_volume_id(s['image'].name) for s in splits['val'])
+    test_volumes = set(extract_volume_id(s['image'].name) for s in splits['test'])
+
+    # Check for overlaps
+    train_val_overlap = train_volumes & val_volumes
+    train_test_overlap = train_volumes & test_volumes
+    val_test_overlap = val_volumes & test_volumes
+
+    if train_val_overlap or train_test_overlap or val_test_overlap:
+        message = "❌ DATA LEAKAGE DETECTED!\n"
+        if train_val_overlap:
+            message += f"  Train/Val overlap: {len(train_val_overlap)} volumes\n"
+        if train_test_overlap:
+            message += f"  Train/Test overlap: {len(train_test_overlap)} volumes\n"
+        if val_test_overlap:
+            message += f"  Val/Test overlap: {len(val_test_overlap)} volumes\n"
+        return False, message
+
+    message = f"✓ NO DATA LEAKAGE: All volumes are in exactly one split\n"
+    message += f"  Train: {len(train_volumes)} unique volumes\n"
+    message += f"  Val:   {len(val_volumes)} unique volumes\n"
+    message += f"  Test:  {len(test_volumes)} unique volumes"
+    return True, message
+
+
 def save_metadata(output_root, splits, stats, args, original_stats):
     """Save detailed metadata about dataset creation"""
+    train_balance_ratio = f"{stats['train']['tear']}:{stats['train']['no_tear']}"
+    val_ratio = f"{stats['val']['tear']}:{stats['val']['no_tear']}"
+    test_ratio = f"{stats['test']['tear']}:{stats['test']['no_tear']}"
+
+    # Verify no data leakage
+    is_valid, leakage_message = verify_no_data_leakage(splits)
+    print(f"\n{'='*60}")
+    print("DATA LEAKAGE VERIFICATION")
+    print(f"{'='*60}")
+    print(leakage_message)
+
+    if not is_valid:
+        raise RuntimeError("Data leakage detected! Aborting.")
+
+    # Count unique volumes per split
+    train_volumes = set(extract_volume_id(s['image'].name) for s in splits['train'])
+    val_volumes = set(extract_volume_id(s['image'].name) for s in splits['val'])
+    test_volumes = set(extract_volume_id(s['image'].name) for s in splits['test'])
+
     metadata = {
         'source': {
             'input_dataset': str(args.input),
@@ -287,20 +474,32 @@ def save_metadata(output_root, splits, stats, args, original_stats):
             'val_ratio': args.val_ratio,
             'test_ratio': args.test_ratio,
             'seed': args.seed,
-            'sampling_method': 'random'
+            'sampling_method': 'volume_split_then_undersample_train',
+            'approach': 'Split VOLUMES (not slices) 70/15/15 to prevent data leakage, then undersample only train set to 50/50',
+            'data_leakage_prevention': True
+        },
+        'volume_statistics': {
+            'train_volumes': len(train_volumes),
+            'val_volumes': len(val_volumes),
+            'test_volumes': len(test_volumes),
+            'total_volumes': len(train_volumes) + len(val_volumes) + len(test_volumes),
+            'no_overlap_verified': True
         },
         'statistics': {
             'splits': stats,
             'total_images': sum(s['total'] for s in stats.values()),
             'total_tear': sum(s['tear'] for s in stats.values()),
             'total_no_tear': sum(s['no_tear'] for s in stats.values()),
-            'balance_ratio': '1:1'
+            'train_balance_ratio': train_balance_ratio,
+            'val_balance_ratio': val_ratio,
+            'test_balance_ratio': test_ratio
         },
         'slice_details': {
             split_name: [
                 {
                     'image': s['image'].name,
-                    'has_tear': not is_label_empty(s['label']),
+                    'volume_id': extract_volume_id(s['image'].name),
+                    'has_tear': s['has_tear'],
                     'original_split': s['original_split']
                 }
                 for s in slices
@@ -318,7 +517,7 @@ def save_metadata(output_root, splits, stats, args, original_stats):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Create balanced dataset from combined YOLO dataset by sampling no-tear slices'
+        description='Create dataset with balanced train set (undersampled) and realistic val/test sets'
     )
     parser.add_argument(
         '--input',
@@ -391,26 +590,30 @@ def main():
     print("="*60)
 
     results = scan_combined_dataset(input_path)
-    all_tear_slices = results['tear_slices']
-    all_no_tear_slices = results['no_tear_slices']
+    tear_volumes = results['tear_volumes']
+    no_tear_volumes = results['no_tear_volumes']
+
+    # Count total slices for original stats
+    total_tear_slices = sum(len(slices) for slices in tear_volumes.values())
+    total_no_tear_slices = sum(len(slices) for slices in no_tear_volumes.values())
 
     print(f"\n✓ Pooled totals:")
-    print(f"  Tear slices: {len(all_tear_slices):,}")
-    print(f"  No-tear slices: {len(all_no_tear_slices):,}")
+    print(f"  Tear volumes: {len(tear_volumes):,} ({total_tear_slices:,} slices)")
+    print(f"  No-tear volumes: {len(no_tear_volumes):,} ({total_no_tear_slices:,} slices)")
 
     original_stats = {
-        'tear': len(all_tear_slices),
-        'no_tear': len(all_no_tear_slices)
+        'tear': total_tear_slices,
+        'no_tear': total_no_tear_slices
     }
 
-    # Step 2: Sample and split
+    # Step 2: Split and undersample train
     print("\n" + "="*60)
-    print("STEP 2: Balancing and splitting dataset")
+    print("STEP 2: Splitting volumes and undersampling train set")
     print("="*60)
 
     splits = sample_and_split(
-        all_tear_slices,
-        all_no_tear_slices,
+        tear_volumes,
+        no_tear_volumes,
         args.train_ratio,
         args.val_ratio,
         args.test_ratio,
@@ -435,23 +638,28 @@ def main():
 
     # Final summary
     print("\n" + "="*60)
-    print("✓ BALANCED DATASET CREATED SUCCESSFULLY!")
+    print("✓ DATASET CREATED SUCCESSFULLY!")
     print("="*60)
     print(f"\nDataset location: {output_path.absolute()}")
     print(f"\nFinal statistics:")
     print(f"  Total images: {sum(s['total'] for s in stats.values()):,}")
     for split_name in ['train', 'val', 'test']:
         s = stats[split_name]
-        print(f"  {split_name.capitalize():5s}: {s['total']:6,d} ({s['tear']:6,d} tear, {s['no_tear']:6,d} no-tear)")
+        tear_pct = 100 * s['tear'] / s['total'] if s['total'] > 0 else 0
+        balance_note = "BALANCED 50/50" if split_name == 'train' else "original imbalance"
+        print(f"  {split_name.capitalize():5s}: {s['total']:6,d} ({s['tear']:6,d} tear [{tear_pct:.1f}%], {s['no_tear']:6,d} no-tear) - {balance_note}")
 
     total_tear = sum(s['tear'] for s in stats.values())
     total_no_tear = sum(s['no_tear'] for s in stats.values())
-    print(f"\n  Class balance: {total_tear:,} tear : {total_no_tear:,} no-tear (perfect 1:1)")
+
+    print(f"\n  Overall: {total_tear:,} tear : {total_no_tear:,} no-tear")
+    print(f"  Train set: {stats['train']['tear']:,} tear : {stats['train']['no_tear']:,} no-tear (balanced 1:1)")
+    print(f"  Val/Test: Preserve original class imbalance for realistic evaluation")
 
     print(f"\nReduction from original:")
     print(f"  Before: {original_stats['tear']:,} tear + {original_stats['no_tear']:,} no-tear = {original_stats['tear'] + original_stats['no_tear']:,} total")
     print(f"  After:  {total_tear:,} tear + {total_no_tear:,} no-tear = {total_tear + total_no_tear:,} total")
-    print(f"  Removed: {original_stats['no_tear'] - total_no_tear:,} excess no-tear slices")
+    print(f"  Removed: {original_stats['no_tear'] - total_no_tear:,} no-tear slices (from train set only)")
 
     print(f"\nReady to train with:")
     print(f"  python train.py --data {output_path / 'dataset.yaml'} ...")
